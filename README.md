@@ -14,7 +14,7 @@ corpus of pre-approved reviews using RAG + LLM-as-judge.
 | DOCX parsing | python-docx | free |
 | Embeddings | OpenAI text-embedding-3-small | ~$0.002 for full corpus |
 | Vector DB | ChromaDB (local persistent) | free |
-| LLM judge | Anthropic claude-haiku-4-5 | ~$0.006 per review |
+| LLM judge | Local Ollama (e.g. Llama 3) | free |
 | Settings | pydantic-settings + .env | free |
 
 **Total running cost at 100 reviews/month: < $1**
@@ -41,8 +41,8 @@ review_ai_backend/
 │   └── vector_store.py            # ChromaDB: upsert, query, list
 │
 ├── evaluation/
-│   ├── rubric_builder.py          # One-time: extract quality rubric from corpus
-│   ├── evaluator.py               # Per-section LLM judge call
+│   ├── rubric_builder.py          # One-time: extract global quality rubric from corpus
+│   ├── evaluator.py               # Prompt definitions and holistic LLM judge logic
 │   └── orchestrator.py            # Ties the full pipeline together
 │
 ├── routes/
@@ -75,7 +75,7 @@ cp .env.example .env
 
 ```env
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+OLLAMA_HOST=http://localhost:11434
 ```
 
 Everything else has sensible defaults.
@@ -191,7 +191,6 @@ Expected response:
 {
   "status": "success",
   "rubric_version": "1.0",
-  "sections_covered": 5,
   "message": "Rubric built from 1 approved reviews. Saved to disk."
 }
 ```
@@ -239,22 +238,15 @@ Expected response shape:
     "tool_category": "AI app builder",
     "overall_score": 6.4,
     "overall_label": "NOTE",
-    "sections": [
-      {
-        "section": "test_design",
-        "present_in_draft": true,
-        "retrieval_mode": "rag_grounded",
-        "relevance": { "score": 7, "label": "PASS", "rationale": "...", "suggestion": null },
-        "depth":     { "score": 4, "label": "NOTE", "rationale": "...", "suggestion": "Add edge cases..." },
-        ...
-        "overall_section_score": 5.6
-      },
-      ...
-    ],
-    "critical_gaps": ["hands_on_testing → depth FAIL (score 3/10)"],
+    "retrieval_mode": "rag_grounded",
+    "relevance": { "score": 7, "label": "PASS", "rationale": "...", "suggestion": null },
+    "depth":     { "score": 4, "label": "NOTE", "rationale": "...", "suggestion": "Add edge cases..." },
+    "precision": { "score": 2, "label": "FAIL", "rationale": "...", "suggestion": "..." },
+    "outcomes":  { "score": 8, "label": "PASS", "rationale": "...", "suggestion": null },
+    "coverage":  { "score": 10, "label": "PASS", "rationale": "...", "suggestion": null },
+    "critical_gaps": ["Depth NOTE (score 4/10)", "Precision FAIL (score 2/10)"],
     "top_suggestions": [
-      "[test_design/depth] Add edge case test cases for empty inputs and error states.",
-      "..."
+      "[Depth] Add edge case test cases for empty inputs and error states."
     ]
   }
 }
@@ -275,19 +267,16 @@ curl -X POST http://localhost:8000/evaluate/file \
 
 ## Key design decisions
 
-**Why section-level scoring (5 calls) instead of one big call?**
-Smaller context per call = more precise scoring. Each section is independently
-auditable. One bad section doesn't corrupt the whole review score.
+**Why holistic scoring (1 call) instead of section-level scoring?**
+Evaluating the document holistically via a single LLM pass allows the judge to contextualize information seamlessly, regardless of its position in the draft, preventing strict-section header dependencies and formatting failures.
 
 **What happens if there's no similar tool in the corpus?**
 `retrieval_mode` switches to `"rubric_only"`. The judge still scores against the
-quality rubric extracted from all approved reviews — just without concrete examples
+global quality rubric extracted from all approved reviews — just without concrete examples
 to compare against. Quality rubric is tool-agnostic by design.
 
-**Why claude-haiku for judging?**
-It's a structured scoring task with a well-defined rubric and JSON output format.
-Haiku handles this cleanly at ~10x lower cost than Sonnet. If scores seem
-uncalibrated after testing, swap `judge_model` in config.py to `claude-sonnet-4-5`.
+**Why Ollama for judging?**
+Ollama provides free local inference. The prompts have been heavily engineered for LLaMA models with Chain of Thought reasoning, numerical bias breaking, and unconstrained JSON formatting limits to ensure accurate structure generation.
 
 **Why Chroma (local) instead of Pinecone?**
 Zero cost, zero infra, runs on your laptop. Chroma persists to disk at
