@@ -1,7 +1,8 @@
-# Review AI — Quality Evaluator Backend
+# Review AI — Backend
 
-Internal tool for CoreLayer Labs. Evaluates draft AI tool reviews against a
-corpus of pre-approved reviews using RAG + LLM-as-judge.
+FastAPI backend for Review AI. Handles document ingestion, RAG retrieval, LLM-as-judge evaluation, and evaluation history.
+
+> **Version:** `0.2.0`
 
 ---
 
@@ -12,273 +13,225 @@ corpus of pre-approved reviews using RAG + LLM-as-judge.
 | API framework | FastAPI + Uvicorn | free |
 | PDF parsing | pymupdf4llm | free |
 | DOCX parsing | python-docx | free |
-| Embeddings | OpenAI text-embedding-3-small | ~$0.002 for full corpus |
+| Embeddings | Ollama `nomic-embed-text` (768-dim, local) | free |
 | Vector DB | ChromaDB (local persistent) | free |
-| LLM judge | Local Ollama (e.g. Llama 3) | free |
-| Settings | pydantic-settings + .env | free |
+| LLM judge | Groq API `llama-3.1-8b-instant` | free (500K tokens/day) |
+| Settings | pydantic-settings + `.env` | free |
 
-**Total running cost at 100 reviews/month: < $1**
+**Total cost: $0**
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
-review_ai_backend/
+backend/
 │
-├── main.py                        # FastAPI app, routes registered here
-├── config.py                      # Settings from .env
-├── models.py                      # All Pydantic request/response schemas
+├── main.py                    # FastAPI app entry point, startup health checks
+├── config.py                  # Settings loaded from .env via pydantic-settings
+├── models.py                  # All Pydantic schemas (request, response, internal)
 ├── requirements.txt
-├── test_local.py                  # Smoke test — no API keys needed
 │
 ├── ingestion/
-│   ├── parser.py                  # PDF / DOCX / text → normalized markdown
-│   ├── chunker.py                 # Split by section heading → Chunk objects
-│   └── embedder.py                # text-embedding-3-small wrapper
+│   ├── parser.py              # PDF / DOCX / TXT → normalized markdown
+│   ├── chunker.py             # Split by section heading → Chunk objects
+│   └── embedder.py            # Ollama nomic-embed-text wrapper (with 503 guard)
 │
 ├── retrieval/
-│   └── vector_store.py            # ChromaDB: upsert, query, list
+│   └── vector_store.py        # ChromaDB: upsert, query, list, delete
 │
 ├── evaluation/
-│   ├── rubric_builder.py          # One-time: extract global quality rubric from corpus
-│   ├── evaluator.py               # Prompt definitions and holistic LLM judge logic
-│   └── orchestrator.py            # Ties the full pipeline together
+│   ├── rubric_builder.py      # Builds QualityRubric from corpus via Groq
+│   ├── evaluator.py           # JUDGE_SYSTEM prompt + Groq call + score parsing
+│   └── orchestrator.py        # Full pipeline: chunk → embed → retrieve → judge → aggregate
 │
 ├── routes/
-│   ├── ingest.py                  # POST /ingest/upload, POST /ingest/rubric, GET /ingest/status
-│   └── evaluate.py                # POST /evaluate/file, POST /evaluate/text
+│   ├── ingest.py              # POST /ingest/upload, POST /ingest/rubric,
+│   │                          # GET /ingest/status, DELETE /ingest/{tool_name}
+│   ├── evaluate.py            # POST /evaluate/file, POST /evaluate/text
+│   └── history.py             # GET /history, PATCH /history/{review_id}
 │
 └── data/
-    ├── chroma_db/                 # Auto-created: vector store persists here
-    ├── rubric/rubric.json         # Auto-created after /ingest/rubric
-    └── outputs/                   # Future: store evaluation result JSONs
+    ├── chroma_db/             # Auto-created: ChromaDB persists here
+    ├── rubric/rubric.json     # Auto-created after POST /ingest/rubric
+    └── outputs/               # One JSON per evaluation: {review_id}.json
 ```
 
 ---
 
 ## Setup
 
-### 1. Clone and install
+### 1. Prerequisites
+
+- Python 3.11+
+- [Ollama](https://ollama.com) installed and running
+- Free [Groq API key](https://console.groq.com)
+
+### 2. Install
 
 ```bash
-cd review_ai_backend
+cd backend
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Create .env
+### 3. Pull the embed model (one-time)
 
 ```bash
-cp .env.example .env
-# Then fill in your keys:
+ollama pull nomic-embed-text
 ```
+
+### 4. Configure `.env`
 
 ```env
-OPENAI_API_KEY=sk-...
-OLLAMA_HOST=http://localhost:11434
+GROQ_API_KEY=gsk_...                    # Required — get free at console.groq.com
+GROQ_MODEL=llama-3.1-8b-instant         # 500K tokens/day free tier
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBED_MODEL=nomic-embed-text
 ```
 
-Everything else has sensible defaults.
-
-### 3. Smoke test (no API keys needed)
-
-```bash
-python test_local.py
-```
-
-Expected output: all 4 tests pass, including section detection.
-
-### 4. Run the server
+### 5. Run
 
 ```bash
 uvicorn main:app --reload --port 8000
 ```
 
-API docs: http://localhost:8000/docs
+On startup you will see:
+```
+[startup] ✓ Groq API key present  (model: llama-3.1-8b-instant)
+[startup] ✓ Ollama online         (embed model: nomic-embed-text)
+[startup] ✓ ChromaDB online       (N chunks in corpus)
+[startup] ✓ Outputs dir writable  (./data/outputs)
+[startup] All checks complete. Server ready.
+```
+
+Missing `GROQ_API_KEY` raises a `RuntimeError` at boot — the server will not start.
 
 ---
 
-## Workflow — step by step
+## API Reference
+
+### Ingestion
 
 ```
-Step 1: Ingest approved reviews  →  POST /ingest/upload  (repeat for each)
-Step 2: Build the rubric         →  POST /ingest/rubric  (run once after uploads)
-Step 3: Check corpus             →  GET  /ingest/status
-Step 4: Evaluate a new draft     →  POST /evaluate/text  or  /evaluate/file
+POST   /ingest/upload           Ingest an approved review (PDF/DOCX/TXT)
+POST   /ingest/rubric           Rebuild quality rubric from current corpus
+GET    /ingest/status           List all ingested tools with metadata
+DELETE /ingest/{tool_name}      Remove a tool's chunks from the corpus
+```
+
+### Evaluation
+
+```
+POST   /evaluate/file           Evaluate a draft review uploaded as a file
+POST   /evaluate/text           Evaluate a draft review passed as raw text
+```
+
+### History
+
+```
+GET    /history                 List all past evaluations (newest first)
+PATCH  /history/{review_id}     Update disposition: APPROVED | DECLINED
+```
+
+### Health
+
+```
+GET    /health                  Deep check: reports Groq key, Ollama, ChromaDB status
+GET    /                        Service info + endpoint map
 ```
 
 ---
 
-## Curl test commands
+## Workflow
 
-### Health check
-
-```bash
-curl http://localhost:8000/
+```
+Step 1: Ingest approved reviews  →  POST /ingest/upload   (repeat per report)
+Step 2: Build the rubric         →  POST /ingest/rubric   (run once after uploads)
+Step 3: Evaluate a draft         →  POST /evaluate/file
+Step 4: Approve or decline       →  PATCH /history/{id}   (or use the dashboard)
 ```
 
 ---
 
-### Step 1 — Ingest an approved review (plain text for testing)
+## Evaluation Pipeline
 
-Save a sample review to a file first:
-
-```bash
-cat > /tmp/sample_approved.txt << 'EOF'
-## Pre-Test Research
-Lovable is an AI-powered no-code app builder targeting non-technical founders.
-It generates full-stack React + Supabase applications from natural language prompts.
-Key differentiator: one-click deployment with built-in hosting.
-
-## Test Design
-Test cases:
-TC-01: Generate a simple todo app from a single prompt
-TC-02: Add authentication to an existing project
-TC-03: Handle ambiguous/incomplete prompt
-TC-04: Generate with database relationships
-TC-05: Export code and run locally
-
-## Hands-On Testing
-TC-01 | Input: "build a todo app" | Expected: functional app | Actual: clean React app with CRUD → PASS
-TC-02 | Input: "add login" | Expected: auth flow | Actual: Supabase auth added in 2 prompts → PASS
-TC-03 | Input: "make it better" | Expected: clarification | Actual: made random UI changes → FAIL
-TC-04 | Input: "add comments linked to todos" | Expected: relational schema | Actual: correct FK setup → PASS
-TC-05 | Export: code downloaded | Local run: missing env vars not documented → NOTE
-
-## Gap Analysis
-- No offline mode tested (not applicable — cloud only)
-- Team collaboration features not tested
-- Prompt history / undo not evaluated
-
-## Polished Report
-Lovable performs strongly on core app generation with reliable Supabase integration.
-Critical gap: ambiguous prompt handling degrades gracefully but unpredictably.
-Recommended for: MVPs, internal tools, prototype demos.
-Overall: PASS with one FAIL on edge case prompt handling.
-EOF
+```
+orchestrator.run_evaluation(markdown, tool_name, tool_category)
+  │
+  ├─ load_rubric()                  ← rubric.json or built-in default
+  ├─ chunk_review(markdown)         ← section-aware text splitter
+  ├─ embed_texts(chunks)            ← Ollama nomic-embed-text (local, free)
+  ├─ retrieve_similar_chunks()      ← ChromaDB cosine similarity, top-5
+  │
+  └─ evaluate_draft(draft, chunks, rubric)
+        │
+        └─ Groq llama-3.1-8b-instant
+             System: JUDGE_SYSTEM (scoring rules, rationale rules)
+             User:   draft + reference chunks + rubric
+             Output: JSON with 5 dimension scores
 ```
 
-Then ingest it:
+### Score Structure
 
-```bash
-curl -X POST http://localhost:8000/ingest/upload \
-  -F "file=@/tmp/sample_approved.txt" \
-  -F "tool_name=Lovable" \
-  -F "tool_category=AI app builder" \
-  -F "review_date=2025-03-15"
-```
+Each of the 5 dimensions returns:
 
-Expected response:
 ```json
 {
-  "status": "success",
-  "chunks_stored": 5,
-  "tool_name": "Lovable",
-  "message": "Stored 5 section chunks for 'Lovable'. Run /ingest/rubric to refresh the rubric."
+  "score":      8,            // 1–10 integer
+  "label":      "PASS",       // PASS | NOTE | FAIL
+  "rationale":  "...",        // 2-3 sentences citing the draft
+  "suggestion": null          // null for PASS, non-null for NOTE/FAIL
 }
 ```
 
----
+### Label / Score Consistency (enforced in code)
 
-### Step 2 — Build the rubric
+| Label | Score range |
+|---|---|
+| PASS | 8, 9, 10 |
+| NOTE | 4, 5, 6, 7 |
+| FAIL | 1, 2, 3 |
 
-```bash
-curl -X POST http://localhost:8000/ingest/rubric
-```
+### Approval Likelihood Formula
 
-Expected response:
-```json
-{
-  "status": "success",
-  "rubric_version": "1.0",
-  "message": "Rubric built from 1 approved reviews. Saved to disk."
-}
-```
-
----
-
-### Step 3 — Check corpus status
-
-```bash
-curl http://localhost:8000/ingest/status
-```
-
-Expected:
-```json
-{
-  "total_chunks": 5,
-  "total_tools": 1,
-  "tools": [
-    { "tool_name": "Lovable", "tool_category": "AI app builder", "review_date": "2025-03-15" }
-  ]
-}
+```python
+label_score = avg(1.0 if PASS, 0.5 if NOTE, 0.0 if FAIL)
+score_norm  = (overall_score - 1) / 9        # normalise 1–10 → 0–1
+raw         = label_score * 0.65 + score_norm * 0.35
+likelihood  = round(10 + raw * 85)           # → 10–95%
 ```
 
 ---
 
-### Step 4 — Evaluate a new draft review (text mode — easiest for testing)
+## Reliability Guards
 
-```bash
-curl -X POST http://localhost:8000/evaluate/text \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "Bolt.new",
-    "tool_category": "AI app builder",
-    "text": "## Pre-Test Research\nBolt.new is a browser-based AI coding tool by StackBlitz.\n\n## Test Design\nTC-01: Generate landing page\nTC-02: Add a form\n\n## Hands-On Testing\nTC-01: Generated cleanly. PASS.\nTC-02: Form added but no validation. NOTE.\n\n## Gap Analysis\nMobile responsiveness not tested.\n\n## Polished Report\nBolt.new is fast but shallow on form handling. Recommended for quick prototypes."
-  }'
-```
-
-Expected response shape:
-```json
-{
-  "status": "success",
-  "result": {
-    "review_id": "...",
-    "tool_name": "Bolt.new",
-    "tool_category": "AI app builder",
-    "overall_score": 6.4,
-    "overall_label": "NOTE",
-    "retrieval_mode": "rag_grounded",
-    "relevance": { "score": 7, "label": "PASS", "rationale": "...", "suggestion": null },
-    "depth":     { "score": 4, "label": "NOTE", "rationale": "...", "suggestion": "Add edge cases..." },
-    "precision": { "score": 2, "label": "FAIL", "rationale": "...", "suggestion": "..." },
-    "outcomes":  { "score": 8, "label": "PASS", "rationale": "...", "suggestion": null },
-    "coverage":  { "score": 10, "label": "PASS", "rationale": "...", "suggestion": null },
-    "critical_gaps": ["Depth NOTE (score 4/10)", "Precision FAIL (score 2/10)"],
-    "top_suggestions": [
-      "[Depth] Add edge case test cases for empty inputs and error states."
-    ]
-  }
-}
-```
+| Guard | File | Prevents |
+|---|---|---|
+| Score-label consistency clamp | `evaluator.py` | PASS with score 2, FAIL with score 9 |
+| Rationale echo guard | `evaluator.py` | LLM echoing "PASS" as rationale text |
+| Label-initial mapping | `evaluator.py` | LLM returning "P"/"N"/"F" as score |
+| Missing dimension fallback | `evaluator.py` | LLM omitting a dimension key entirely |
+| Groq 429 handler | `evaluator.py`, `rubric_builder.py` | Rate limit → human-readable wait message |
+| Ollama 503 guard | `embedder.py` | Connection error → clean HTTP 503 |
+| Startup assertions | `main.py` | Missing key / Ollama down detected at boot |
 
 ---
 
-### Evaluate via file upload
+## Key Design Decisions
 
-```bash
-curl -X POST http://localhost:8000/evaluate/file \
-  -F "file=@/tmp/your_draft_review.pdf" \
-  -F "tool_name=SomeNewTool" \
-  -F "tool_category=AI writing assistant"
-```
+**Why holistic scoring (single LLM call)?**
+One pass over the full document lets the judge contextualise content regardless of position, avoiding failures caused by strict section-header dependencies.
 
----
+**Why Groq instead of local Ollama for the judge?**
+The system runs on 8 GB RAM. A 70B model requires ~40 GB. Groq's free API tier (`llama-3.1-8b-instant`, 500K tokens/day) offloads inference while keeping cost at $0.
 
-## Key design decisions
+**Why Ollama for embeddings?**
+`nomic-embed-text` is a 274 MB model that produces high-quality 768-dim vectors entirely locally. No API key, no cost, no privacy risk for corporate documents.
 
-**Why holistic scoring (1 call) instead of section-level scoring?**
-Evaluating the document holistically via a single LLM pass allows the judge to contextualize information seamlessly, regardless of its position in the draft, preventing strict-section header dependencies and formatting failures.
+**Why ChromaDB local instead of Pinecone?**
+Zero infra, zero cost, persists to `./data/chroma_db`. To move to production, swap the three ChromaDB calls in `vector_store.py` for Pinecone equivalents.
 
-**What happens if there's no similar tool in the corpus?**
-`retrieval_mode` switches to `"rubric_only"`. The judge still scores against the
-global quality rubric extracted from all approved reviews — just without concrete examples
-to compare against. Quality rubric is tool-agnostic by design.
-
-**Why Ollama for judging?**
-Ollama provides free local inference. The prompts have been heavily engineered for LLaMA models with Chain of Thought reasoning, numerical bias breaking, and unconstrained JSON formatting limits to ensure accurate structure generation.
-
-**Why Chroma (local) instead of Pinecone?**
-Zero cost, zero infra, runs on your laptop. Chroma persists to disk at
-`./data/chroma_db`. When you move to production/server, swap to Pinecone
-free tier by changing one function in `retrieval/vector_store.py`.
+**What happens with no corpus?**
+`retrieval_mode` switches to `rubric_only`. The judge still scores using the built-in default rubric — it just has no peer examples to compare against.
