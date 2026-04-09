@@ -2,7 +2,7 @@
 
 Review AI is a full-stack internal tool for **CoreLayer Labs** that evaluates draft AI tool reviews against a corporate corpus of pre-approved reports. It uses a **Retrieval-Augmented Generation (RAG)** pipeline combined with **LLM-as-a-judge** to holistically score drafts, surface specific improvement suggestions, and maintain a living training database of approved reviews.
 
-> **Current version:** `0.2.0`
+> **Current version:** `0.3.0`
 
 ---
 
@@ -11,7 +11,7 @@ Review AI is a full-stack internal tool for **CoreLayer Labs** that evaluates dr
 ```
 review-ai/
 │
-├── backend/                  # FastAPI + ChromaDB + Groq LLM logic
+├── backend/                  # FastAPI + ChromaDB + Groq + Jina AI
 │   ├── ingestion/            # Document parsing, chunking, embedding
 │   ├── evaluation/           # LLM judge, rubric builder, orchestrator
 │   ├── retrieval/            # ChromaDB vector store wrapper
@@ -21,7 +21,7 @@ review-ai/
 └── frontend/                 # React + Vite glassmorphic dashboard
     └── src/
         ├── App.jsx           # Global UI state, Axios API calls
-        └── index.css         # Dark-mode glassmorphism styling
+        └── index.css         # Dark-mode glassmorphism + responsive layout
 ```
 
 ---
@@ -34,19 +34,19 @@ review-ai/
 | React 19 + Vite | UI rendering, HMR dev server |
 | Axios | REST calls to the backend |
 | Lucide React | Icon set |
-| Vanilla CSS (Glassmorphism) | Dark-mode, no heavy framework |
+| Vanilla CSS (Glassmorphism) | Dark-mode, fully responsive, no CSS framework |
 
 ### Backend
 | Layer | Tool | Cost |
 |---|---|---|
 | API framework | FastAPI + Uvicorn | free |
 | Document parsing | pymupdf4llm + python-docx | free |
-| Embeddings | Ollama `nomic-embed-text` (768-dim, local) | free |
+| Embeddings | Jina AI `jina-embeddings-v2-base-en` (768-dim, API) | free (1M tokens) |
 | Vector DB | ChromaDB (local persistent) | free |
 | LLM Judge | Groq API `llama-3.1-8b-instant` | free (500K TPD) |
 | Settings | pydantic-settings + `.env` | free |
 
-**Total running cost: $0** (Groq free tier + fully local embeddings)
+**Total running cost: $0** — both Jina and Groq are free-tier API services, no local processes required.
 
 ---
 
@@ -58,8 +58,8 @@ You need **two** terminal windows — one for the backend, one for the frontend.
 
 - Python 3.11+
 - Node 18+
-- [Ollama](https://ollama.com) installed and running
 - A free [Groq API key](https://console.groq.com)
+- A free [Jina AI API key](https://jina.ai) (sign in with Google, key shown on dashboard)
 
 ### 1. Backend
 
@@ -73,27 +73,28 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Pull the embedding model (one-time, ~274 MB)
-ollama pull nomic-embed-text
-
 # Configure secrets
 cp .env.example .env
 # Edit .env and fill in:
 #   GROQ_API_KEY=gsk_...
-#   GROQ_MODEL=llama-3.1-8b-instant
+#   JINA_API_KEY=jina_...
+```
 
-# Start the server
+Start the server:
+```bash
 uvicorn main:app --reload --port 8000
 ```
 
-On startup, the server runs health checks and prints:
+On startup, the server validates all dependencies and prints:
 ```
 [startup] ✓ Groq API key present  (model: llama-3.1-8b-instant)
-[startup] ✓ Ollama online         (embed model: nomic-embed-text)
+[startup] ✓ Jina API key present  (model: jina-embeddings-v2-base-en)
 [startup] ✓ ChromaDB online       (N chunks in corpus)
 [startup] ✓ Outputs dir writable  (./data/outputs)
 [startup] All checks complete. Server ready.
 ```
+
+> Missing `GROQ_API_KEY` or `JINA_API_KEY` raises a `RuntimeError` at boot — the server will not start.
 
 API reference: `http://localhost:8000/docs`
 
@@ -118,7 +119,7 @@ Draft uploaded
 [1] Chunk draft into semantic sections
       │
       ▼
-[2] Embed chunks → search ChromaDB for similar approved reviews
+[2] Embed chunks via Jina AI → search ChromaDB for similar approved reviews
       │
       ▼
 [3] Top-5 similar chunks + full rubric → sent to Groq LLM judge
@@ -152,15 +153,23 @@ Each dimension is scored **1–10** and labelled **PASS / NOTE / FAIL**.
 | Panel | What it does |
 |---|---|
 | **Left — Evaluate Draft** | Upload a PDF/DOCX/TXT draft to run RAG evaluation |
-| **Centre — Feedback** | Shows overall score, approval likelihood %, per-dimension cards with rationale + suggestions, RAG reference sources, and a **copyable shareable summary** |
+| **Centre — Feedback** | Overall score, approval likelihood %, per-dimension cards with rationale + suggestions, RAG reference sources, top recommendations, copyable shareable summary |
 | **Right — Ingest Approved** | Directly add a trusted report to the training corpus |
-| **Training Corpus** | View, refresh, and delete ingested reports |
+| **Training Corpus** | Collapsible table of ingested reports — view, refresh, delete |
 | **Evaluation History** | Full log of past evaluations with PENDING / APPROVED / DECLINED status |
+
+### Responsive Layout
+
+| Screen width | Layout |
+|---|---|
+| > 1100px | 3-column (Left \| Centre \| Right) |
+| 640–1100px | Left + Right on top row, Centre full-width below |
+| < 640px | All panels stacked vertically |
 
 ### Approve & Train flow
 
 1. Evaluate a draft → review the feedback
-2. Click **Approve & Ingest** → the file is embedded into ChromaDB and the rubric is rebuilt
+2. Click **Approve & Ingest** → file embedded into ChromaDB, rubric rebuilt
 3. The approved report now influences all future evaluations
 
 ---
@@ -194,7 +203,7 @@ Each dimension is scored **1–10** and labelled **PASS / NOTE / FAIL**.
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/health` | Deep health check — reports Groq, Ollama, ChromaDB status |
+| `GET` | `/health` | Deep health check — reports Groq, Jina, ChromaDB status |
 
 ---
 
@@ -203,11 +212,11 @@ Each dimension is scored **1–10** and labelled **PASS / NOTE / FAIL**.
 ```env
 # Required
 GROQ_API_KEY=gsk_...           # Get free at console.groq.com
+JINA_API_KEY=jina_...          # Get free at jina.ai
 
 # Optional overrides (defaults shown)
 GROQ_MODEL=llama-3.1-8b-instant
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_EMBED_MODEL=nomic-embed-text
+JINA_EMBED_MODEL=jina-embeddings-v2-base-en
 ```
 
 ---
@@ -220,9 +229,25 @@ OLLAMA_EMBED_MODEL=nomic-embed-text
 | Rationale echo guard | `evaluator.py` | LLM echoing "PASS" as the rationale text |
 | Label-initial mapping | `evaluator.py` | LLM returning "P"/"N"/"F" as score strings |
 | Missing dimension fallback | `evaluator.py` | LLM omitting a whole dimension key |
-| Startup assertions | `main.py` | Missing API key, Ollama down, DB corrupt |
-| Ollama 503 guard | `embedder.py` | Raw connection tracebacks → clean user error |
+| Rubric nested JSON unwrap | `rubric_builder.py` | LLM wrapping response in extra keys (recursive search) |
 | Groq 429 handler | `evaluator.py`, `rubric_builder.py` | Rate limit → human-readable wait message |
+| Jina error guards | `embedder.py` | 401 / 429 / 503 / 504 → clean user-facing errors |
+| Startup assertions | `main.py` | Missing API keys or DB corrupt — fail fast at boot |
+
+---
+
+## 🌐 Deployment
+
+The tool is fully deployment-ready — no local processes required:
+
+| Component | Service | Notes |
+|---|---|---|
+| LLM Judge | Groq API | Already external |
+| Embeddings | Jina AI API | Already external (switched from local Ollama) |
+| Vector DB | ChromaDB | Attach a persistent disk on your hosting provider |
+| History | JSON files in `data/outputs/` | Attach same persistent disk |
+
+Deploy to Railway / Render / Fly.io / any VPS. Set `GROQ_API_KEY` and `JINA_API_KEY` as environment variables and mount a persistent volume at `backend/data/`.
 
 ---
 
@@ -233,5 +258,4 @@ backend/data/
 ├── chroma_db/          # ChromaDB vector store (approved review embeddings)
 ├── rubric/rubric.json  # Last-built quality rubric (auto-regenerated on ingest)
 └── outputs/            # One JSON per evaluation: {review_id}.json
-                        # Contains full EvaluationResult + HistoryEntry
 ```

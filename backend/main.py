@@ -9,7 +9,6 @@ API docs auto-generated at:
   http://localhost:8000/redoc  (ReDoc)
 """
 
-import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,31 +38,15 @@ def _startup_checks():
     else:
         print(f"[startup] ✓ Groq API key present  (model: {settings.groq_model})")
 
-    # 2. Ollama reachable — without this embeddings and ingest fail
-    try:
-        r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=4.0)
-        if r.status_code != 200:
-            warnings.append(
-                f"Ollama returned HTTP {r.status_code}. "
-                "Embeddings may fail. Restart with: ollama serve"
-            )
-        else:
-            model_names = [m["name"] for m in r.json().get("models", [])]
-            # Accept both "nomic-embed-text" and "nomic-embed-text:latest"
-            base_names  = [n.split(":")[0] for n in model_names]
-            embed_base  = settings.ollama_embed_model.split(":")[0]
-            if embed_base not in base_names:
-                warnings.append(
-                    f"Ollama is running but '{settings.ollama_embed_model}' is not pulled. "
-                    f"Run: ollama pull {settings.ollama_embed_model}"
-                )
-            else:
-                print(f"[startup] ✓ Ollama online     (embed model: {settings.ollama_embed_model})")
-    except httpx.RequestError as exc:
-        warnings.append(
-            f"Ollama not reachable at {settings.ollama_base_url} ({exc}). "
-            "Start it with: ollama serve   — evaluations will fail until it's up."
+    # 2. Jina API key — without this embeddings and ingest fail
+    if not settings.jina_api_key or not settings.jina_api_key.strip():
+        errors.append(
+            "JINA_API_KEY is not set in .env. "
+            "All ingestion and evaluation will fail (embeddings need this). "
+            "Get a free key at: jina.ai"
         )
+    else:
+        print(f"[startup] ✓ Jina API key present  (model: {settings.jina_embed_model})")
 
     # 3. ChromaDB — test a read so we catch corruption early
     try:
@@ -160,17 +143,13 @@ async def health():
     Returns 200 even if degraded so load-balancers don't kill the pod,
     but the body shows which services are down.
     """
-    status = {"backend": "ok", "groq": "unknown", "ollama": "unknown", "chromadb": "unknown"}
+    status = {"backend": "ok", "groq": "unknown", "jina": "unknown", "chromadb": "unknown"}
 
     # Groq key present
     status["groq"] = "ok" if settings.groq_api_key and settings.groq_api_key.strip() else "missing_key"
 
-    # Ollama
-    try:
-        r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
-        status["ollama"] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
-    except httpx.RequestError:
-        status["ollama"] = "unreachable"
+    # Jina key present
+    status["jina"] = "ok" if settings.jina_api_key and settings.jina_api_key.strip() else "missing_key"
 
     # ChromaDB
     try:

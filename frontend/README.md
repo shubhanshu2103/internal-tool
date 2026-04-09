@@ -11,7 +11,7 @@ React + Vite glassmorphic dashboard for the Review AI internal tool.
 | React 19 + Vite | UI + HMR dev server |
 | Axios | HTTP calls to the FastAPI backend |
 | Lucide React | Icon library |
-| Vanilla CSS | Dark-mode glassmorphism, no CSS framework |
+| Vanilla CSS | Dark-mode glassmorphism, fully responsive |
 
 ---
 
@@ -28,45 +28,68 @@ The backend must be running at `http://localhost:8000` before using the dashboar
 
 ---
 
-## Layout
+## Responsive Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Evaluate Draft   │      Feedback Panel      │ Ingest Report │
-│  (Left Panel)     │      (Centre Panel)      │ (Right Panel) │
-├─────────────────────────────────────────────────────────────┤
-│                    Training Corpus                           │
-├─────────────────────────────────────────────────────────────┤
-│                   Evaluation History                         │
-└─────────────────────────────────────────────────────────────┘
+> 1100px (wide screen / desktop)
+┌──────────────┬─────────────────────┬──────────────┐
+│ Evaluate     │   Feedback Panel    │ Ingest       │
+│ Draft        │   (Centre)          │ Approved     │
+├──────────────┴─────────────────────┴──────────────┤
+│                 Training Corpus                    │
+├────────────────────────────────────────────────────┤
+│                Evaluation History                  │
+└────────────────────────────────────────────────────┘
+
+640–1100px (laptop / zoomed in)
+┌──────────────┬──────────────┐
+│ Evaluate     │ Ingest       │
+│ Draft        │ Approved     │
+├──────────────┴──────────────┤
+│      Feedback Panel         │
+├─────────────────────────────┤
+│      Training Corpus        │
+├─────────────────────────────┤
+│     Evaluation History      │
+└─────────────────────────────┘
+
+< 640px (mobile)
+All panels stacked vertically
 ```
 
-### Left Panel — Evaluate Draft
+Each panel grows with its own content — the page scrolls naturally, no inner scroll zones.
+
+---
+
+## Panel Guide
+
+### Left — Evaluate Draft
 - Upload a PDF, DOCX, or TXT draft
 - Enter tool name and category
 - Click **Run RAG Evaluation** → triggers the full pipeline
 
-### Centre Panel — Feedback
+### Centre — Feedback
 Displays after evaluation completes:
 - **Overall score** (X.X / 10) with PASS / NOTE / FAIL badge
-- **Approval Likelihood** percentage with colour-coded bar
+- **Approval Likelihood** percentage with colour-coded progress bar
 - **Critical Gaps** banner (dimensions that FAILed)
 - **Per-dimension cards** — score bar, label pill, rationale, action suggestion
-- **Reference Sources** — top RAG chunks used from the corpus (tool name, section, similarity %)
-- **Top Recommendations** — highest-priority suggestions sorted by score
-- **Shareable Summary** — plain-text copyable report for sharing via Slack / email
+- **Reference Sources** — top RAG chunks used from corpus (tool, section, similarity %)
+- **Top Recommendations** — highest-priority fixes sorted by score
+- **Shareable Summary** — copyable plain-text report for Slack / email
 - **Approve & Ingest** / **Decline Review** action buttons
 
-### Right Panel — Ingest Approved Review
+### Right — Ingest Approved Review
 - Upload a pre-approved report directly into the training corpus
 - Triggers corpus embedding + rubric rebuild automatically
 
-### Training Corpus Section
-- Collapsible table of all ingested reports (tool name, category, date)
-- Hover to reveal a delete button to remove a report from the corpus
+### Training Corpus (bottom)
+- Collapsible table: tool name, category, date added
+- Hover a row to reveal delete button — removes from corpus on confirm
 
-### Evaluation History Section
-- Full log of past evaluations with score, likelihood, and status
+### Evaluation History (bottom)
+- Full log of every evaluation run
+- Columns: tool, category, score, likelihood, status, date
 - Statuses: `PENDING` / `APPROVED` / `DECLINED`
 
 ---
@@ -76,39 +99,50 @@ Displays after evaluation completes:
 ```
 src/
 ├── App.jsx       # All state, event handlers, API calls, JSX layout
-└── index.css     # All styles — variables, panels, cards, tables, animations
+└── index.css     # All styles — variables, panels, cards, tables, responsive breakpoints
 ```
 
-### Constants in App.jsx
+### Constants (`App.jsx`)
 
 ```js
-DIM_LABELS  // Human-readable names for the 5 dimensions
-DIM_DESC    // One-line description shown on each dimension card
-API_BASE    // Backend URL (http://localhost:8000)
+DIM_LABELS  // { relevance: 'Relevance', depth: 'Depth', ... }
+DIM_DESC    // One-line description shown under each dimension card title
+API_BASE    // 'http://localhost:8000'
 ```
 
-### Main handlers
+### State
+
+| State | Type | Purpose |
+|---|---|---|
+| `evalFile` | File | Draft file selected in left panel |
+| `feedback` | object | EvaluationResult returned by the backend |
+| `centerStatus` | string | `'APPROVED'` or `'DECLINED'` after action |
+| `corpus` | object | Corpus status from GET /ingest/status |
+| `history` | object | Evaluation history from GET /history |
+| `copied` | bool | Clipboard copy feedback (resets after 2.5s) |
+
+### Handlers
 
 | Handler | What it does |
 |---|---|
-| `handleEvaluate` | POST /evaluate/file with the draft |
+| `handleEvaluate` | POST /evaluate/file → sets `feedback` |
 | `handleIngest` | POST /ingest/upload + POST /ingest/rubric |
-| `handleApproveFeedback` | Ingest with force=true + PATCH history as APPROVED |
-| `handleDeclineFeedback` | PATCH history as DECLINED |
+| `handleApproveFeedback` | Ingest with `force=true` + PATCH history APPROVED |
+| `handleDeclineFeedback` | PATCH history DECLINED |
 | `handleDeleteTool` | DELETE /ingest/{tool_name} + refresh corpus |
 | `handleCopy` | Write `buildShareableText(feedback)` to clipboard |
-| `buildShareableText` | Formats the full eval result as copyable plain text |
+| `buildShareableText` | Formats full eval result as copyable plain text |
 
 ---
 
-## Styling Notes
+## Styling
 
-All styles live in `index.css` using CSS custom properties:
+All styles in `index.css` using CSS custom properties:
 
 ```css
 --bg-color          /* #0d0f12 — page background */
---bg-color-glass    /* rgba(18, 22, 28, 0.7) — panel background */
---glass-border      /* rgba(255, 255, 255, 0.08) — border */
+--bg-color-glass    /* rgba(18, 22, 28, 0.7) — panel glass background */
+--glass-border      /* rgba(255, 255, 255, 0.08) — border colour */
 --accent-color      /* #3b82f6 — blue accent */
 --success           /* #10b981 — green (PASS) */
 --note              /* #f59e0b — amber (NOTE) */
@@ -116,3 +150,8 @@ All styles live in `index.css` using CSS custom properties:
 --text-main         /* #f3f4f6 */
 --text-muted        /* #9ca3af */
 ```
+
+Responsive breakpoints:
+- `@media (max-width: 1100px)` — 2-column layout
+- `@media (max-width: 640px)` — single-column stack
+- `@media (max-width: 500px)` — score/likelihood row stacks vertically

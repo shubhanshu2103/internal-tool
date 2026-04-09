@@ -32,7 +32,7 @@ def _get_collection():
         settings=ChromaSettings(anonymized_telemetry=False),
     )
     return client.get_or_create_collection(
-        name="approved_reviews_holistic",  # new collection to avoid schema conflicts
+        name="approved_reviews_holistic",    # Ollama nomic-embed-text 768-dim
         metadata={"hnsw:space": "cosine"},   # cosine similarity for text
     )
 

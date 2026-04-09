@@ -157,6 +157,25 @@ def build_rubric() -> QualityRubric:
         )
 
     rubric_dict = _extract_json(response.choices[0].message.content)
+
+    # LLM sometimes nests the fields under a wrapper key (e.g. {"quality_rubric": {...}}
+    # or {"rubric": {"dimensions": {...}}}) — recursively unwrap until we find the level
+    # that contains the expected dimension keys.
+    EXPECTED = {"relevance", "depth", "precision", "outcomes", "coverage"}
+
+    def _find_rubric_level(d: dict, depth: int = 0) -> dict:
+        if depth > 4:
+            return d
+        if EXPECTED.issubset(d.keys()):
+            return d
+        for val in d.values():
+            if isinstance(val, dict):
+                found = _find_rubric_level(val, depth + 1)
+                if EXPECTED.issubset(found.keys()):
+                    return found
+        return d  # fallback — let pydantic surface the real error
+
+    rubric_dict = _find_rubric_level(rubric_dict)
     rubric_dict["generated_from_n_reviews"] = n_reviews
     rubric_dict["version"] = "2.0-holistic"
     rubric = QualityRubric(**rubric_dict)

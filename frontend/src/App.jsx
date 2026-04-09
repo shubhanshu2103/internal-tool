@@ -233,7 +233,7 @@ function App() {
     <div className="dashboard-layout">
       
       {/* LEFT PANEL: UPLOAD DRAFT */}
-      <div className="glass-panel">
+      <div className="glass-panel panel-left">
         <h2><FileSearch size={22} /> Evaluate Draft Review</h2>
         <p style={{marginBottom: '1.5rem', color: 'var(--text-muted)', fontSize: '0.9rem'}}>
           Upload an unapproved review to test it against the strict internal knowledge rubric.
@@ -276,7 +276,7 @@ function App() {
       </div>
 
       {/* CENTER PANEL: FEEDBACK */}
-      <div className="glass-panel" style={{ background: 'rgba(18, 22, 28, 0.4)' }}>
+      <div className="glass-panel panel-center" style={{ background: 'rgba(18, 22, 28, 0.4)' }}>
         
         {!feedback && !centerStatus && (
           <div className="empty-state">
@@ -458,7 +458,7 @@ function App() {
       </div>
 
       {/* RIGHT PANEL: DIRECT INGESTION */}
-      <div className="glass-panel">
+      <div className="glass-panel panel-right">
         <h2><Database size={22} /> Ingest Approved Review</h2>
         <p style={{marginBottom: '1.5rem', color: 'var(--text-muted)', fontSize: '0.9rem'}}>
           Directly train the semantic model by uploading a perfectly approved corporate review.

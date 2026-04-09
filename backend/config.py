@@ -6,15 +6,15 @@ class Settings(BaseSettings):
     rubric_path: str = "./data/rubric/rubric.json"
     outputs_dir: str = "./data/outputs"
 
-    # Ollama — used ONLY for local embeddings (lightweight, no RAM pressure)
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_embed_model: str = "nomic-embed-text"   # pull with: ollama pull nomic-embed-text
+    # Jina AI — used for embeddings (free API, no local process, deployment-safe)
+    jina_api_key: str = ""
+    jina_embed_model: str = "jina-embeddings-v2-base-en"  # 768-dim, 1M free tokens
 
-    # Groq — used for LLM judge (free API, 70B model, zero local RAM)
+    # Groq — used for LLM judge (free API, zero local RAM)
     groq_api_key: str = ""
     groq_model: str = "llama-3.1-8b-instant"        # 500K TPD free tier (5× more quota)
 
-    # Embedding config — nomic-embed-text produces 768-dim vectors
+    # Embedding config — jina-embeddings-v2-base-en produces 768-dim vectors
     embedding_dims: int = 768
 
     # RAG config

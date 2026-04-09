@@ -2,7 +2,7 @@
 
 FastAPI backend for Review AI. Handles document ingestion, RAG retrieval, LLM-as-judge evaluation, and evaluation history.
 
-> **Version:** `0.2.0`
+> **Version:** `0.3.0`
 
 ---
 
@@ -13,12 +13,13 @@ FastAPI backend for Review AI. Handles document ingestion, RAG retrieval, LLM-as
 | API framework | FastAPI + Uvicorn | free |
 | PDF parsing | pymupdf4llm | free |
 | DOCX parsing | python-docx | free |
-| Embeddings | Ollama `nomic-embed-text` (768-dim, local) | free |
+| Embeddings | Jina AI `jina-embeddings-v2-base-en` (768-dim, API) | free (1M tokens) |
 | Vector DB | ChromaDB (local persistent) | free |
 | LLM judge | Groq API `llama-3.1-8b-instant` | free (500K tokens/day) |
+| HTTP client | httpx | free |
 | Settings | pydantic-settings + `.env` | free |
 
-**Total cost: $0**
+**Total cost: $0** — no local processes, fully API-based, deployment-ready.
 
 ---
 
@@ -27,7 +28,7 @@ FastAPI backend for Review AI. Handles document ingestion, RAG retrieval, LLM-as
 ```
 backend/
 │
-├── main.py                    # FastAPI app entry point, startup health checks
+├── main.py                    # FastAPI app, lifespan startup checks, /health endpoint
 ├── config.py                  # Settings loaded from .env via pydantic-settings
 ├── models.py                  # All Pydantic schemas (request, response, internal)
 ├── requirements.txt
@@ -35,15 +36,16 @@ backend/
 ├── ingestion/
 │   ├── parser.py              # PDF / DOCX / TXT → normalized markdown
 │   ├── chunker.py             # Split by section heading → Chunk objects
-│   └── embedder.py            # Ollama nomic-embed-text wrapper (with 503 guard)
+│   └── embedder.py            # Jina AI REST API wrapper (401/429/503/504 guards)
 │
 ├── retrieval/
 │   └── vector_store.py        # ChromaDB: upsert, query, list, delete
 │
 ├── evaluation/
 │   ├── rubric_builder.py      # Builds QualityRubric from corpus via Groq
+│   │                          # Includes recursive JSON unwrap for nested LLM responses
 │   ├── evaluator.py           # JUDGE_SYSTEM prompt + Groq call + score parsing
-│   └── orchestrator.py        # Full pipeline: chunk → embed → retrieve → judge → aggregate
+│   └── orchestrator.py        # Full pipeline: chunk → embed → retrieve → judge → result
 │
 ├── routes/
 │   ├── ingest.py              # POST /ingest/upload, POST /ingest/rubric,
@@ -64,8 +66,8 @@ backend/
 ### 1. Prerequisites
 
 - Python 3.11+
-- [Ollama](https://ollama.com) installed and running
 - Free [Groq API key](https://console.groq.com)
+- Free [Jina AI API key](https://jina.ai) — sign in with Google, key shown immediately
 
 ### 2. Install
 
@@ -76,22 +78,16 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Pull the embed model (one-time)
-
-```bash
-ollama pull nomic-embed-text
-```
-
-### 4. Configure `.env`
+### 3. Configure `.env`
 
 ```env
-GROQ_API_KEY=gsk_...                    # Required — get free at console.groq.com
-GROQ_MODEL=llama-3.1-8b-instant         # 500K tokens/day free tier
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_EMBED_MODEL=nomic-embed-text
+GROQ_API_KEY=gsk_...                          # Required — get free at console.groq.com
+GROQ_MODEL=llama-3.1-8b-instant               # 500K tokens/day free tier
+JINA_API_KEY=jina_...                          # Required — get free at jina.ai
+JINA_EMBED_MODEL=jina-embeddings-v2-base-en   # 768-dim, 1M free tokens
 ```
 
-### 5. Run
+### 4. Run
 
 ```bash
 uvicorn main:app --reload --port 8000
@@ -100,13 +96,13 @@ uvicorn main:app --reload --port 8000
 On startup you will see:
 ```
 [startup] ✓ Groq API key present  (model: llama-3.1-8b-instant)
-[startup] ✓ Ollama online         (embed model: nomic-embed-text)
+[startup] ✓ Jina API key present  (model: jina-embeddings-v2-base-en)
 [startup] ✓ ChromaDB online       (N chunks in corpus)
 [startup] ✓ Outputs dir writable  (./data/outputs)
 [startup] All checks complete. Server ready.
 ```
 
-Missing `GROQ_API_KEY` raises a `RuntimeError` at boot — the server will not start.
+Missing `GROQ_API_KEY` or `JINA_API_KEY` raises a `RuntimeError` at boot — the server will not start.
 
 ---
 
@@ -138,7 +134,7 @@ PATCH  /history/{review_id}     Update disposition: APPROVED | DECLINED
 ### Health
 
 ```
-GET    /health                  Deep check: reports Groq key, Ollama, ChromaDB status
+GET    /health                  Deep check: reports groq, jina, chromadb status
 GET    /                        Service info + endpoint map
 ```
 
@@ -162,13 +158,13 @@ orchestrator.run_evaluation(markdown, tool_name, tool_category)
   │
   ├─ load_rubric()                  ← rubric.json or built-in default
   ├─ chunk_review(markdown)         ← section-aware text splitter
-  ├─ embed_texts(chunks)            ← Ollama nomic-embed-text (local, free)
+  ├─ embed_texts(chunks)            ← Jina AI REST API (768-dim vectors)
   ├─ retrieve_similar_chunks()      ← ChromaDB cosine similarity, top-5
   │
   └─ evaluate_draft(draft, chunks, rubric)
         │
         └─ Groq llama-3.1-8b-instant
-             System: JUDGE_SYSTEM (scoring rules, rationale rules)
+             System: JUDGE_SYSTEM (scoring rules, rationale rules, calibration)
              User:   draft + reference chunks + rubric
              Output: JSON with 5 dimension scores
 ```
@@ -213,9 +209,12 @@ likelihood  = round(10 + raw * 85)           # → 10–95%
 | Rationale echo guard | `evaluator.py` | LLM echoing "PASS" as rationale text |
 | Label-initial mapping | `evaluator.py` | LLM returning "P"/"N"/"F" as score |
 | Missing dimension fallback | `evaluator.py` | LLM omitting a dimension key entirely |
+| Rubric nested JSON unwrap | `rubric_builder.py` | LLM wrapping output in `quality_rubric` or `dimensions` keys — recursive search up to 4 levels |
 | Groq 429 handler | `evaluator.py`, `rubric_builder.py` | Rate limit → human-readable wait message |
-| Ollama 503 guard | `embedder.py` | Connection error → clean HTTP 503 |
-| Startup assertions | `main.py` | Missing key / Ollama down detected at boot |
+| Jina 401 guard | `embedder.py` | Invalid API key → clear setup instruction |
+| Jina 429 guard | `embedder.py` | Quota exceeded → clear message |
+| Jina 503/504 guard | `embedder.py` | Network/timeout → clean error, no traceback |
+| Startup assertions | `main.py` | Missing API keys, DB corrupt — fail fast at boot |
 
 ---
 
@@ -227,11 +226,11 @@ One pass over the full document lets the judge contextualise content regardless 
 **Why Groq instead of local Ollama for the judge?**
 The system runs on 8 GB RAM. A 70B model requires ~40 GB. Groq's free API tier (`llama-3.1-8b-instant`, 500K tokens/day) offloads inference while keeping cost at $0.
 
-**Why Ollama for embeddings?**
-`nomic-embed-text` is a 274 MB model that produces high-quality 768-dim vectors entirely locally. No API key, no cost, no privacy risk for corporate documents.
+**Why Jina AI for embeddings instead of Ollama?**
+Originally Ollama ran `nomic-embed-text` locally (274 MB). After switching the LLM to Groq, Ollama was the only remaining local dependency — and it breaks on deployment since it's a desktop process. Jina's free tier (1M tokens, no credit card) is fully API-based, works anywhere, and produces the same 768-dim vectors so no corpus migration was needed.
 
 **Why ChromaDB local instead of Pinecone?**
-Zero infra, zero cost, persists to `./data/chroma_db`. To move to production, swap the three ChromaDB calls in `vector_store.py` for Pinecone equivalents.
+Zero infra, zero cost, persists to `./data/chroma_db`. To move to production, swap the three ChromaDB calls in `vector_store.py` for Pinecone equivalents and mount a persistent volume.
 
 **What happens with no corpus?**
 `retrieval_mode` switches to `rubric_only`. The judge still scores using the built-in default rubric — it just has no peer examples to compare against.

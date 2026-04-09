@@ -1,92 +1,85 @@
 """
 ingestion/embedder.py
 
-Wraps Ollama's nomic-embed-text for generating chunk embeddings locally.
+Wraps Jina AI's embedding API for generating chunk embeddings.
 
-Model: nomic-embed-text
-  - 768 dimensions
-  - Runs fully local via Ollama — no API key, no cost
-  - Pull once with: ollama pull nomic-embed-text
+Model: jina-embeddings-v2-base-en
+  - 768 dimensions — compatible with existing ChromaDB collection
+  - Free tier: 1M tokens, no credit card required
+  - External API — works in any deployment (no local process needed)
+  - Get a free key at: jina.ai
 """
 
 import httpx
-import ollama
 from fastapi import HTTPException
 from config import settings
 
-_client = ollama.Client(host=settings.ollama_base_url)
-
-
-def _check_ollama_alive():
-    """
-    Ping Ollama and raise a clean 503 if it's not reachable.
-    Called as a fallback inside embed_texts so the user gets a
-    human-readable error instead of a raw connection traceback.
-    """
-    try:
-        r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
-        if r.status_code != 200:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"Embedding service returned HTTP {r.status_code}. "
-                    "Try restarting Ollama: ollama serve"
-                ),
-            )
-        # Check the required model is present
-        model_names = [m["name"] for m in r.json().get("models", [])]
-        base_names  = [n.split(":")[0] for n in model_names]
-        embed_base  = settings.ollama_embed_model.split(":")[0]
-        if embed_base not in base_names:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"Ollama is running but the embed model '{settings.ollama_embed_model}' "
-                    f"is not installed. Fix with: ollama pull {settings.ollama_embed_model}"
-                ),
-            )
-    except HTTPException:
-        raise  # re-raise our own 503s unchanged
-    except httpx.RequestError:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Embedding service (Ollama) is offline. "
-                "Start it with: ollama serve   "
-                "then retry your request."
-            ),
-        )
+JINA_EMBED_URL = "https://api.jina.ai/v1/embeddings"
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """
-    Embed a list of strings. Returns a list of float vectors.
-    Raises HTTP 503 with a clear message if Ollama is not running.
+    Embed a list of strings using Jina AI.
+    Returns a list of 768-dim float vectors.
+    Raises clean HTTP errors if the API call fails.
     """
     if not texts:
         return []
 
+    headers = {
+        "Authorization": f"Bearer {settings.jina_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": settings.jina_embed_model,
+        "input": texts,
+    }
+
     try:
-        response = _client.embed(
-            model=settings.ollama_embed_model,
-            input=texts,
+        response = httpx.post(
+            JINA_EMBED_URL,
+            headers=headers,
+            json=payload,
+            timeout=30.0,
         )
-        return response.embeddings
-
-    except HTTPException:
-        raise  # already formatted
-
-    except Exception:
-        # Something went wrong — check if Ollama is the root cause
-        _check_ollama_alive()
-        # If Ollama is alive but embed still failed, surface a generic 500
+    except httpx.TimeoutException:
         raise HTTPException(
-            status_code=500,
+            status_code=504,
+            detail="Jina AI embedding request timed out. Retry in a moment.",
+        )
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot reach Jina AI API. Check your internet connection. ({exc})",
+        )
+
+    if response.status_code == 401:
+        raise HTTPException(
+            status_code=401,
             detail=(
-                "Embedding failed for an unknown reason. "
-                "Check that Ollama is running and the model is loaded."
+                "Jina AI API key is invalid or missing. "
+                "Set JINA_API_KEY in your .env file. "
+                "Get a free key at: jina.ai"
             ),
         )
+    if response.status_code == 429:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Jina AI free tier quota exceeded (1M tokens). "
+                "Check usage at: cloud.jina.ai"
+            ),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Jina AI returned unexpected status {response.status_code}: {response.text[:200]}",
+        )
+
+    data = response.json()
+    # Sort by index to guarantee order matches input
+    items = sorted(data["data"], key=lambda x: x["index"])
+    return [item["embedding"] for item in items]
 
 
 def embed_single(text: str) -> list[float]:
