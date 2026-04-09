@@ -73,8 +73,8 @@ def run_evaluation(
 
     unique_retrieved = list(retrieved_dict.values())
     unique_retrieved.sort(key=lambda x: x["similarity"], reverse=True)
-    # Give the LLM top 10 most relevant contextual bites across the report
-    top_context = unique_retrieved[:10]
+    # Give the LLM top 5 most relevant contextual bites across the report
+    top_context = unique_retrieved[:5]
 
     mode = "rag_grounded" if top_context else "rubric_only"
     print(f"[orchestrator] Holistic evaluation: {mode} ({len(top_context)} chunks retrieved)")

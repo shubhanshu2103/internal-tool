@@ -23,6 +23,7 @@ async def upload_approved_review(
     tool_name: str = Form(...),
     tool_category: str = Form(...),
     review_date: str = Form(...),
+    force: bool = Form(False),
 ):
     """
     Upload a pre-approved review PDF or DOCX.
@@ -33,14 +34,19 @@ async def upload_approved_review(
       - tool_name:     e.g. "Lovable"
       - tool_category: e.g. "AI code generation"
       - review_date:   ISO date string e.g. "2025-03-15"
+      - force:         if True, replace existing entry (used by Approve & Ingest flow)
     """
-    # Deduplication check — block re-ingesting the same tool name
+    # Deduplication check
     existing = {t["tool_name"].lower() for t in list_ingested_tools()}
     if tool_name.lower() in existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"'{tool_name}' is already in the corpus. Delete it first to re-ingest.",
-        )
+        if force:
+            # Remove old version so the newly approved copy replaces it
+            delete_tool_chunks(tool_name)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"'{tool_name}' is already in the corpus. Delete it first to re-ingest.",
+            )
 
     # Read file bytes
     file_bytes = await file.read()

@@ -13,6 +13,8 @@ It:
 import json
 import re
 from groq import Groq
+from groq import RateLimitError as GroqRateLimitError
+from fastapi import HTTPException
 from pydantic import BaseModel
 from typing import Optional, Literal
 from models import (
@@ -93,7 +95,7 @@ def _build_judge_prompt(
 
     # Draft
     lines.append("### Draft Review Report (to be scored):\n")
-    lines.append(draft_content[:15000])  # Cap to prevent blowing context
+    lines.append(draft_content[:8000])   # Cap to reduce token usage
     lines.append("\n")
 
     # Retrieved approved examples (if any)
@@ -102,7 +104,7 @@ def _build_judge_prompt(
         for i, chunk in enumerate(retrieved_chunks, 1):
             tool = chunk["metadata"]["tool_name"]
             lines.append(f"**Example {i} (from Tool: {tool}):**")
-            lines.append(chunk["document"][:2000])  # Cap per example
+            lines.append(chunk["document"][:1000])  # Cap per example
             lines.append("")
     else:
         lines.append("*No similar approved sections found — use rubric-only mode.*\n")
@@ -155,15 +157,25 @@ def evaluate_draft(
     retrieval_mode = "rag_grounded" if retrieved_chunks else "rubric_only"
     prompt = _build_judge_prompt(draft_content, retrieved_chunks, rubric)
 
-    response = _client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {"role": "system", "content": JUDGE_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
+    try:
+        response = _client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+        )
+    except GroqRateLimitError as e:
+        msg = str(e)
+        wait = "a few minutes"
+        if "Please try again in" in msg:
+            wait = msg.split("Please try again in")[1].split(".")[0].strip()
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily evaluation limit reached. Please try again in {wait}. Upgrade your Groq plan at console.groq.com for more quota."
+        )
 
     raw = response.choices[0].message.content
     print(f"\n[DEBUG] Raw LLM Response length: {len(raw)} chars")

@@ -11,6 +11,8 @@ Two rubric sources (in priority order):
 import json
 import re
 from groq import Groq
+from groq import RateLimitError as GroqRateLimitError
+from fastapi import HTTPException
 from pathlib import Path
 from retrieval.vector_store import _get_collection
 from models import QualityRubric, DimensionRubric
@@ -134,15 +136,25 @@ def build_rubric() -> QualityRubric:
         "do NOT copy specific content or tool names from the reviews above."
     )
 
-    response = _client.chat.completions.create(
-        model=settings.groq_model,
-        messages=[
-            {"role": "system", "content": RUBRIC_BUILD_SYSTEM},
-            {"role": "user", "content": user_message},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
+    try:
+        response = _client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {"role": "system", "content": RUBRIC_BUILD_SYSTEM},
+                {"role": "user", "content": user_message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+    except GroqRateLimitError as e:
+        msg = str(e)
+        wait = "a few minutes"
+        if "Please try again in" in msg:
+            wait = msg.split("Please try again in")[1].split(".")[0].strip()
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily evaluation limit reached. Please try again in {wait}. Upgrade your Groq plan at console.groq.com for more quota."
+        )
 
     rubric_dict = _extract_json(response.choices[0].message.content)
     rubric_dict["generated_from_n_reviews"] = n_reviews

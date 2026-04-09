@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # Groq — used for LLM judge (free API, 70B model, zero local RAM)
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"   # free tier, best quality
+    groq_model: str = "llama-3.1-8b-instant"        # 500K TPD free tier (5× more quota)
 
     # Embedding config — nomic-embed-text produces 768-dim vectors
     embedding_dims: int = 768
