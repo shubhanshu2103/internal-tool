@@ -125,5 +125,15 @@ def list_ingested_tools() -> list[dict]:
     return list(seen.values())
 
 
+def delete_tool_chunks(tool_name: str) -> int:
+    """Delete all chunks belonging to tool_name. Returns number of chunks removed."""
+    collection = _get_collection()
+    results = collection.get(where={"tool_name": tool_name}, include=[])
+    ids = results["ids"]
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
+
+
 def count_chunks() -> int:
     return _get_collection().count()

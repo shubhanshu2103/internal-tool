@@ -12,5 +12,9 @@ data/
 .idea/
 .DS_Store
 
+# Secrets
+.env
+*.env
+
 # Internal
 .claude/

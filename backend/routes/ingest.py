@@ -10,7 +10,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from ingestion.parser import parse_file
 from ingestion.chunker import chunk_review
 from ingestion.embedder import embed_texts
-from retrieval.vector_store import upsert_chunks, list_ingested_tools, count_chunks
+from retrieval.vector_store import upsert_chunks, delete_tool_chunks, list_ingested_tools, count_chunks
 from evaluation.rubric_builder import build_rubric
 from models import IngestResponse, RubricBuildResponse
 
@@ -34,6 +34,14 @@ async def upload_approved_review(
       - tool_category: e.g. "AI code generation"
       - review_date:   ISO date string e.g. "2025-03-15"
     """
+    # Deduplication check — block re-ingesting the same tool name
+    existing = {t["tool_name"].lower() for t in list_ingested_tools()}
+    if tool_name.lower() in existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{tool_name}' is already in the corpus. Delete it first to re-ingest.",
+        )
+
     # Read file bytes
     file_bytes = await file.read()
     if not file_bytes:
@@ -93,6 +101,24 @@ async def rebuild_rubric():
         rubric_version=rubric.version,
         message=f"Rubric built from {rubric.generated_from_n_reviews} approved reviews. Saved to disk.",
     )
+
+
+@router.delete("/{tool_name}")
+async def delete_from_corpus(tool_name: str):
+    """
+    Remove all chunks for a given tool from the vector store and rebuild the rubric.
+    """
+    removed = delete_tool_chunks(tool_name)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail=f"'{tool_name}' not found in corpus.")
+
+    # Rebuild rubric from remaining corpus (or reset to default if empty)
+    try:
+        build_rubric()
+    except ValueError:
+        pass  # corpus now empty — rubric will fall back to default
+
+    return {"status": "deleted", "tool_name": tool_name, "chunks_removed": removed}
 
 
 @router.get("/status")

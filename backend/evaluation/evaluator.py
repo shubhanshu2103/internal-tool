@@ -12,7 +12,7 @@ It:
 
 import json
 import re
-import ollama
+from groq import Groq
 from pydantic import BaseModel
 from typing import Optional, Literal
 from models import (
@@ -20,7 +20,7 @@ from models import (
 )
 from config import settings
 
-_client = ollama.Client(host=settings.ollama_base_url)
+_client = Groq(api_key=settings.groq_api_key)
 
 
 # ── Schema passed to Ollama for constrained decoding ─────────────────────────
@@ -50,26 +50,36 @@ You will receive:
 
 Score the full draft document on the five dimensions. Return ONLY valid JSON — no prose, no fences.
 
-JSON schema format (You must replace the angle brackets with actual generated text):
+JSON schema format:
 {
   "retrieval_mode": "rag_grounded",
-  "relevance":  { "rationale": "<insert detailed analysis here>", "label": "PASS", "score": 90, "suggestion": null },
-  "depth":      { "rationale": "<insert detailed analysis here>", "label": "NOTE", "score": 60, "suggestion": "<insert action item>" },
-  "precision":  { "rationale": "<insert detailed analysis here>", "label": "FAIL", "score": 20, "suggestion": "<insert action item>" },
-  "outcomes":   { "rationale": "<insert detailed analysis here>", "label": "PASS", "score": 80, "suggestion": null },
-  "coverage":   { "rationale": "<insert detailed analysis here>", "label": "PASS", "score": 100, "suggestion": null }
+  "relevance":  { "rationale": "<2-3 sentences citing specific content from the draft>", "label": "PASS", "score": "90", "suggestion": null },
+  "depth":      { "rationale": "<2-3 sentences citing specific content from the draft>", "label": "NOTE", "score": "60", "suggestion": "<concrete, actionable instruction referencing the draft>" },
+  "precision":  { "rationale": "<2-3 sentences citing specific content from the draft>", "label": "FAIL", "score": "20", "suggestion": "<concrete, actionable instruction referencing the draft>" },
+  "outcomes":   { "rationale": "<2-3 sentences citing specific content from the draft>", "label": "PASS", "score": "80", "suggestion": null },
+  "coverage":   { "rationale": "<2-3 sentences citing specific content from the draft>", "label": "PASS", "score": "100", "suggestion": null }
 }
 
-Scoring rules (100 is Perfect, 10 is Terrible):
-  - 100 is absolutely perfect, do NOT bias to low numbers.
-  - generate the rationale first to think through the output, then the label, then the numerical score.
-  - PASS: score 80, 90, or 100. Document meets or exceeds the standard in this dimension.
-  - NOTE: score 40, 50, 60, or 70. Document is acceptable but has meaningful gaps.
-  - FAIL: score 10, 20, or 30. Document is heavily flawed or missing critical substance.
-  - IMPORTANT: You MUST output exact lowercase keys: "relevance", "depth", "precision", "outcomes", "coverage". Do NOT output uppercase keys. Do NOT omit any keys.
+Scoring rules (score range: 10–100):
+  - Think through your rationale first, then decide the label, then pick the score.
+  - PASS: score must be 80, 90, or 100. The document meets or exceeds the standard for this dimension.
+  - NOTE: score must be 40, 50, 60, or 70. The document is acceptable but has meaningful gaps.
+  - FAIL: score must be 10, 20, or 30. The document is heavily flawed or missing critical substance.
+  - CRITICAL: score and label MUST be consistent. PASS → score 80/90/100. NOTE → score 40/50/60/70. FAIL → score 10/20/30. Never mix them.
+  - The 'score' field must be a STRING containing exactly one of: "10","20","30","40","50","60","70","80","90","100".
   - retrieval_mode: "rag_grounded" if approved examples were provided, "rubric_only" if not.
-  - suggestion: required for NOTE and FAIL, null for PASS.
-  - Be calibrated — do not inflate scores."""
+  - suggestion: REQUIRED (non-null) for NOTE and FAIL. Must be null for PASS.
+
+Rationale rules — STRICTLY ENFORCED:
+  - The rationale MUST reference specific content, sections, claims, or evidence actually present in the draft.
+  - NEVER write a URL alone as the rationale. NEVER write a generic statement that could apply to any document.
+  - Minimum 2 full sentences. Be concrete: quote or paraphrase what the draft says (or fails to say).
+  - Example of BAD rationale: "The review lacks detail." — too vague.
+  - Example of GOOD rationale: "The draft identifies the tool's core use case as code generation but provides no benchmarks or comparative data against alternatives. The outcomes section states results were 'good' without quantifying time saved or error reduction."
+
+Suggestion rules:
+  - Suggestions must be specific and actionable, referencing what is missing or wrong in THIS draft.
+  - NEVER write a generic suggestion. Reference the actual gap found in the rationale."""
 
 
 def _build_judge_prompt(
@@ -145,22 +155,26 @@ def evaluate_draft(
     retrieval_mode = "rag_grounded" if retrieved_chunks else "rubric_only"
     prompt = _build_judge_prompt(draft_content, retrieved_chunks, rubric)
 
-    response = _client.chat(
-        model=settings.ollama_chat_model,
+    response = _client.chat.completions.create(
+        model=settings.groq_model,
         messages=[
             {"role": "system", "content": JUDGE_SYSTEM},
             {"role": "user", "content": prompt},
         ],
-        format="json",
+        response_format={"type": "json_object"},
+        temperature=0.1,
     )
 
-    raw = response.message.content
+    raw = response.choices[0].message.content
     print(f"\n[DEBUG] Raw LLM Response length: {len(raw)} chars")
-    print(f"[DEBUG] LLM Output: {raw}\n")
     data = _extract_json(raw)
     print(f"[DEBUG] Extracted Dict: {data}\n")
 
     def _find_key(obj, k):
+        # LLM hallucination: returning a completely flat object without top-level dimension keys
+        if isinstance(obj, dict) and 'rationale' in [str(key).lower() for key in obj.keys()] and k.lower() in ["relevance", "depth", "precision", "outcomes", "coverage"]:
+            return obj
+            
         # Recursively search for a key (case-insensitive)
         if isinstance(obj, dict):
             # check exact first
@@ -172,6 +186,10 @@ def evaluate_draft(
             # dig deeper
             for val in obj.values():
                 found = _find_key(val, k)
+                if found is not None: return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = _find_key(item, k)
                 if found is not None: return found
         return None
 
@@ -188,6 +206,25 @@ def evaluate_draft(
             else:
                 d = {"score": 10, "label": "FAIL", "rationale": "The model evaluated this as a FAIL. It omitted the textual rationale."}
                 
+        # If the LLM outputted a pure number (e.g. "RELEVANCE": 0.8)
+        elif isinstance(d, (int, float)):
+            num = float(d)
+            if num <= 1.0:
+                calc_score = int(num * 100)
+            elif num <= 10.0:
+                calc_score = int(num * 10)
+            else:
+                calc_score = int(num)
+                
+            if calc_score >= 80:
+                calc_label = "PASS"
+            elif calc_score >= 40:
+                calc_label = "NOTE"
+            else:
+                calc_label = "FAIL"
+                
+            d = {"score": calc_score, "label": calc_label, "rationale": f"The model assigned a raw numerical score of {num} but omitted the textual rationale."}
+                
         if not isinstance(d, dict):
             # Safe fallback if the LLM completely omitted this dimension
             d = {"score": 10, "label": "FAIL", "rationale": f"[Parsing default] LLM omitted {key} entirely."}
@@ -196,23 +233,47 @@ def evaluate_draft(
         # handle cases where score might be parsed as a string or list
         if isinstance(raw_score, list):
             raw_score = raw_score[0] if raw_score else 1
-            
+
+        # LLM sometimes returns the label initial instead of a number (e.g. "N", "F", "P")
+        if isinstance(raw_score, str):
+            _s = raw_score.strip().upper()
+            if _s in ("P", "PASS"):
+                raw_score = 90
+            elif _s in ("N", "NOTE"):
+                raw_score = 50
+            elif _s in ("F", "FAIL"):
+                raw_score = 20
+
         try:
             clamped_score = max(1, min(100, int(raw_score)))
             if clamped_score > 10:
                 clamped_score = clamped_score // 10
         except (ValueError, TypeError):
             clamped_score = 1
-            
+
         label_raw = d.get("label", "FAIL")
         if isinstance(label_raw, list): label_raw = label_raw[0] if label_raw else "FAIL"
         if str(label_raw).upper() not in ["PASS", "NOTE", "FAIL"]:
             label_raw = "FAIL"
+
+        # Enforce score-label consistency — LLM sometimes mismatches them
+        _lbl = str(label_raw).upper()
+        if _lbl == "PASS" and clamped_score < 8:
+            clamped_score = 8
+        elif _lbl == "NOTE" and clamped_score < 4:
+            clamped_score = 4
+        elif _lbl == "NOTE" and clamped_score > 7:
+            clamped_score = 7
+        elif _lbl == "FAIL" and clamped_score > 3:
+            clamped_score = 3
             
         # extract rationale string properly if the LLM wrapped it in array
         rationale_raw = d.get("rationale", "No rationale generated.")
         if isinstance(rationale_raw, list):
             rationale_raw = " ".join(str(x) for x in rationale_raw)
+        # Guard: LLM sometimes echoes the label word as the rationale
+        if not rationale_raw or str(rationale_raw).strip().upper() in ("PASS", "NOTE", "FAIL", "[]", "N/A", ""):
+            rationale_raw = "No detailed rationale was provided by the model for this dimension."
             
         return DimensionScore(
             score=clamped_score,

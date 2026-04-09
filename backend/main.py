@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routes.ingest import router as ingest_router
 from routes.evaluate import router as evaluate_router
+from routes.history import router as history_router
 
 app = FastAPI(
     title="Review AI — Quality Evaluator",
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(ingest_router)
 app.include_router(evaluate_router)
+app.include_router(history_router)
 
 
 @app.get("/", tags=["health"])

@@ -1,5 +1,4 @@
 from pydantic_settings import BaseSettings
-from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -7,10 +6,13 @@ class Settings(BaseSettings):
     rubric_path: str = "./data/rubric/rubric.json"
     outputs_dir: str = "./data/outputs"
 
-    # Ollama config — run `ollama serve` locally before starting the server
+    # Ollama — used ONLY for local embeddings (lightweight, no RAM pressure)
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "nomic-embed-text"   # pull with: ollama pull nomic-embed-text
-    ollama_chat_model: str = "llama3.2"            # pull with: ollama pull llama3.2
+
+    # Groq — used for LLM judge (free API, 70B model, zero local RAM)
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"   # free tier, best quality
 
     # Embedding config — nomic-embed-text produces 768-dim vectors
     embedding_dims: int = 768

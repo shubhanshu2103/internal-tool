@@ -64,6 +64,7 @@ class EvaluationResult(BaseModel):
     tool_category: str
     overall_score: float                 # mean across all dimensions
     overall_label: Label
+    approval_likelihood: int             # 0-100 % chance of approval
     retrieval_mode: Literal["rag_grounded", "rubric_only"]
     relevance: DimensionScore
     depth: DimensionScore
@@ -72,7 +73,30 @@ class EvaluationResult(BaseModel):
     coverage: DimensionScore
     critical_gaps: list[str]             # dims that hard-FAIL
     top_suggestions: list[str]           # top 3 actionable items
+    rag_sources: list[dict] = []         # approved chunks used as reference
 
 class EvaluateResponse(BaseModel):
     status: str
     result: EvaluationResult
+
+
+# ─── History ──────────────────────────────────────────────────────────────────
+
+class Disposition(str, Enum):
+    PENDING  = "PENDING"
+    APPROVED = "APPROVED"
+    DECLINED = "DECLINED"
+
+class HistoryEntry(BaseModel):
+    review_id: str
+    tool_name: str
+    tool_category: str
+    overall_score: float
+    overall_label: Label
+    approval_likelihood: int
+    disposition: Disposition = Disposition.PENDING
+    evaluated_at: str                    # ISO datetime
+    disposed_at: Optional[str] = None
+
+class DispositionUpdate(BaseModel):
+    disposition: Disposition

@@ -10,13 +10,13 @@ Two rubric sources (in priority order):
 
 import json
 import re
-import ollama
+from groq import Groq
 from pathlib import Path
 from retrieval.vector_store import _get_collection
 from models import QualityRubric, DimensionRubric
 from config import settings
 
-_client = ollama.Client(host=settings.ollama_base_url)
+_client = Groq(api_key=settings.groq_api_key)
 
 
 # ─── Hardcoded default rubric ─────────────────────────────────────────────────
@@ -134,16 +134,17 @@ def build_rubric() -> QualityRubric:
         "do NOT copy specific content or tool names from the reviews above."
     )
 
-    response = _client.chat(
-        model=settings.ollama_chat_model,
+    response = _client.chat.completions.create(
+        model=settings.groq_model,
         messages=[
             {"role": "system", "content": RUBRIC_BUILD_SYSTEM},
             {"role": "user", "content": user_message},
         ],
-        format=QualityRubric.model_json_schema(),
+        response_format={"type": "json_object"},
+        temperature=0.1,
     )
 
-    rubric_dict = _extract_json(response.message.content)
+    rubric_dict = _extract_json(response.choices[0].message.content)
     rubric_dict["generated_from_n_reviews"] = n_reviews
     rubric_dict["version"] = "2.0-holistic"
     rubric = QualityRubric(**rubric_dict)
