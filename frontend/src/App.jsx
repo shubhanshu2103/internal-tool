@@ -18,7 +18,7 @@ const DIM_DESC = {
   coverage: 'Are all key aspects and use cases of the tool addressed?',
 };
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 function App() {
   // EVALUATE (Left Panel) State

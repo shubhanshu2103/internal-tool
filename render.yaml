@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: review-ai-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: review-ai-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: JINA_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: JINA_EMBED_MODEL
+        value: jina-embeddings-v2-base-en
+      - key: CHROMA_PERSIST_DIR
+        value: /data/chroma_db
+      - key: RUBRIC_PATH
+        value: /data/rubric/rubric.json
+      - key: OUTPUTS_DIR
+        value: /data/outputs
